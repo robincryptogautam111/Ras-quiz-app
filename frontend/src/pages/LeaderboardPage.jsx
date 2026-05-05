@@ -4,7 +4,7 @@ import api from '../utils/api'
 import { useAuth } from '../context/AuthContext'
 import { Trophy, Medal, Crown } from 'lucide-react'
 
-export function LeaderboardPage() {
+export default function LeaderboardPage() {
   const { user } = useAuth()
   const [data, setData] = useState([])
   const [myPos, setMyPos] = useState(null)
