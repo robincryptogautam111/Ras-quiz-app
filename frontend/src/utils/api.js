@@ -1,7 +1,9 @@
 import axios from 'axios'
 
+const BASE_URL = 'https://ras-quiz-app-production.up.railway.app/api'
+
 const api = axios.create({
-  baseURL: import.meta.env.VITE_API_URL || '/api',
+  baseURL: BASE_URL,
   timeout: 15000
 })
 
@@ -38,7 +40,7 @@ api.interceptors.response.use(
       isRefreshing = true
       try {
         const refreshToken = localStorage.getItem('refreshToken')
-        const res = await axios.post('/api/auth/refresh', { refreshToken })
+        const res = await axios.post(`${BASE_URL}/auth/refresh`, { refreshToken })
         const { accessToken } = res.data.data
         localStorage.setItem('accessToken', accessToken)
         api.defaults.headers.common['Authorization'] = `Bearer ${accessToken}`
