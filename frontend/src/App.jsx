@@ -20,6 +20,8 @@ import ProfilePage from './pages/ProfilePage'
 import LeaderboardPage from './pages/LeaderboardPage'
 import OrderHistoryPage from './pages/OrderHistoryPage'
 import BookmarksPage from './pages/BookmarksPage'
+import DailyChallengePage from './pages/DailyChallengePage'
+import RevisePage from './pages/RevisePage'
 
 // Admin pages
 import AdminDashboard from './pages/admin/AdminDashboard'
@@ -50,7 +52,7 @@ const GuestRoute = ({ children }) => {
 }
 
 const Spinner = () => (
-  <div className="w-8 h-8 border-2 border-brand-500 border-t-transparent rounded-full animate-spin" />
+  <div className="w-8 h-8 border-2 border-gold-500 border-t-transparent rounded-full animate-spin" />
 )
 
 export default function App() {
@@ -68,6 +70,8 @@ export default function App() {
           <Route path="/quizzes" element={<QuizzesPage />} />
           <Route path="/quizzes/:id" element={<QuizDetailPage />} />
           <Route path="/leaderboard" element={<LeaderboardPage />} />
+          <Route path="/daily" element={<DailyChallengePage />} />
+          <Route path="/revise" element={<RevisePage />} />
           <Route path="/profile" element={<ProfilePage />} />
           <Route path="/orders" element={<OrderHistoryPage />} />
           <Route path="/bookmarks" element={<BookmarksPage />} />
