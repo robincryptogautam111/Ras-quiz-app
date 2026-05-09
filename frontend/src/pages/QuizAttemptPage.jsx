@@ -2,32 +2,44 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import api from '../utils/api'
 import toast from 'react-hot-toast'
-import { Clock, ChevronRight, BookmarkPlus, X, CheckCircle2, XCircle, SkipForward } from 'lucide-react'
+import {
+  Clock, ChevronLeft, ChevronRight, X, CheckCircle2, XCircle,
+  Bookmark, BookmarkCheck, Maximize2, Minimize2, Send, Grid3x3,
+  Languages, AlertTriangle,
+} from 'lucide-react'
 
-// Sound effects via AudioContext
+const LETTERS = ['A', 'B', 'C', 'D', 'E', 'F']
+
+// ============ Sound effects (optional, soft) ============
 const playSound = (type) => {
   try {
     const ctx = new (window.AudioContext || window.webkitAudioContext)()
     const osc = ctx.createOscillator()
     const gain = ctx.createGain()
-    osc.connect(gain)
-    gain.connect(ctx.destination)
-    if (type === 'correct') {
+    osc.connect(gain); gain.connect(ctx.destination)
+    if (type === 'tick')   osc.frequency.setValueAtTime(880, ctx.currentTime)
+    if (type === 'submit') {
       osc.frequency.setValueAtTime(523, ctx.currentTime)
-      osc.frequency.setValueAtTime(659, ctx.currentTime + 0.1)
-      osc.frequency.setValueAtTime(784, ctx.currentTime + 0.2)
-    } else if (type === 'wrong') {
-      osc.frequency.setValueAtTime(200, ctx.currentTime)
-      osc.frequency.setValueAtTime(150, ctx.currentTime + 0.2)
+      osc.frequency.setValueAtTime(784, ctx.currentTime + 0.12)
     }
-    gain.gain.setValueAtTime(0.15, ctx.currentTime)
-    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.4)
-    osc.start()
-    osc.stop(ctx.currentTime + 0.4)
+    gain.gain.setValueAtTime(0.07, ctx.currentTime)
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.3)
+    osc.start(); osc.stop(ctx.currentTime + 0.3)
   } catch {}
 }
 
-const LETTERS = ['A', 'B', 'C', 'D']
+// status: 'unseen' | 'visited' | 'answered' | 'review' | 'review-answered'
+function paletteClass(status, isCurrent) {
+  const base = 'w-9 h-9 rounded-lg text-xs font-bold grid place-items-center transition-all border'
+  const ring = isCurrent ? ' ring-2 ring-offset-2 ring-gold-500 ring-offset-[rgb(var(--surface))]' : ''
+  switch (status) {
+    case 'answered':         return base + ' bg-emerald-500 text-white border-emerald-500' + ring
+    case 'review':           return base + ' bg-purple-500 text-white border-purple-500' + ring
+    case 'review-answered':  return base + ' bg-purple-500 text-white border-2 border-emerald-400' + ring
+    case 'visited':          return base + ' bg-rose-500/15 text-rose-600 dark:text-rose-300 border-rose-500/40' + ring
+    default:                 return base + ' bg-[rgb(var(--surface-2))] text-[rgb(var(--text-muted))] border-[rgb(var(--border))]' + ring
+  }
+}
 
 export default function QuizAttemptPage() {
   const { id } = useParams()
@@ -36,26 +48,37 @@ export default function QuizAttemptPage() {
   const [quiz, setQuiz] = useState(null)
   const [loading, setLoading] = useState(true)
   const [currentIdx, setCurrentIdx] = useState(0)
-  const [answers, setAnswers] = useState([]) // [{questionId, selectedOption, timeTaken}]
-  const [selected, setSelected] = useState(null)
-  const [revealed, setRevealed] = useState(false)
-  const [timeLeft, setTimeLeft] = useState(30)
+  const [answers, setAnswers] = useState({})         // { qId: optionIdx }
+  const [marks, setMarks] = useState({})             // { qId: true }
+  const [visited, setVisited] = useState({})         // { qId: true }
+  const [bookmarks, setBookmarks] = useState({})     // { qId: true }
   const [totalTimeLeft, setTotalTimeLeft] = useState(0)
   const [submitting, setSubmitting] = useState(false)
-  const [qStartTime, setQStartTime] = useState(Date.now())
-
-  const timerRef = useRef(null)
+  const [paletteOpen, setPaletteOpen] = useState(false)
+  const [confirmSubmit, setConfirmSubmit] = useState(false)
+  const [confirmExit, setConfirmExit] = useState(false)
+  const [lang, setLang] = useState('en')             // 'en' | 'hi'
+  const [isFs, setIsFs] = useState(false)
   const totalTimerRef = useRef(null)
+  const startedAtRef = useRef(Date.now())
 
-  // Load quiz
+  // ============ Load quiz ============
   useEffect(() => {
     api.post(`/quizzes/${id}/start`)
       .then(res => {
         const data = res.data.data
         setQuiz(data)
-        setTimeLeft(data.questionTimer || 30)
         setTotalTimeLeft(data.duration || 1800)
-        setQStartTime(Date.now())
+        setVisited({ [data.questions[0]._id]: true })
+        // Try to restore from auto-save
+        try {
+          const saved = JSON.parse(localStorage.getItem(`quiz_attempt_${id}`) || 'null')
+          if (saved && saved.answers) {
+            setAnswers(saved.answers); setMarks(saved.marks || {}); setVisited(saved.visited || {})
+            setCurrentIdx(saved.currentIdx ?? 0); setTotalTimeLeft(saved.totalTimeLeft ?? data.duration)
+            toast('Resumed your previous progress', { icon: '⏪' })
+          }
+        } catch {}
       })
       .catch(err => {
         toast.error(err.response?.data?.message || 'Failed to load quiz.')
@@ -64,225 +87,394 @@ export default function QuizAttemptPage() {
       .finally(() => setLoading(false))
   }, [id])
 
-  // Per-question timer
-  useEffect(() => {
-    if (!quiz || revealed || quiz.questionTimer === 0) return
-    clearInterval(timerRef.current)
-    timerRef.current = setInterval(() => {
-      setTimeLeft(t => {
-        if (t <= 1) {
-          clearInterval(timerRef.current)
-          handleAutoSkip()
-          return 0
-        }
-        return t - 1
-      })
-    }, 1000)
-    return () => clearInterval(timerRef.current)
-  }, [currentIdx, quiz, revealed])
-
-  // Total quiz timer
+  // ============ Total timer ============
   useEffect(() => {
     if (!quiz) return
     totalTimerRef.current = setInterval(() => {
       setTotalTimeLeft(t => {
-        if (t <= 1) {
-          clearInterval(totalTimerRef.current)
-          handleSubmit(true)
-          return 0
-        }
+        if (t <= 1) { clearInterval(totalTimerRef.current); handleSubmit(true); return 0 }
         return t - 1
       })
     }, 1000)
     return () => clearInterval(totalTimerRef.current)
   }, [quiz])
 
-  const handleAutoSkip = useCallback(() => {
-    if (revealed) return
-    const q = quiz.questions[currentIdx]
-    const timeTaken = Math.round((Date.now() - qStartTime) / 1000)
-    setAnswers(prev => [...prev, { questionId: q._id, selectedOption: -1, timeTaken }])
-    setSelected(-1)
-    setRevealed(true)
-    playSound('wrong')
-  }, [currentIdx, quiz, revealed, qStartTime])
+  // ============ Auto-save every 5s ============
+  useEffect(() => {
+    if (!quiz) return
+    const t = setInterval(() => {
+      localStorage.setItem(`quiz_attempt_${id}`, JSON.stringify({
+        answers, marks, visited, currentIdx, totalTimeLeft, savedAt: Date.now()
+      }))
+    }, 5000)
+    return () => clearInterval(t)
+  }, [quiz, answers, marks, visited, currentIdx, totalTimeLeft, id])
 
-  const handleSelect = (idx) => {
-    if (revealed) return
-    clearInterval(timerRef.current)
-    const q = quiz.questions[currentIdx]
-    const timeTaken = Math.round((Date.now() - qStartTime) / 1000)
-    setSelected(idx)
-    setRevealed(true)
-    setAnswers(prev => [...prev, { questionId: q._id, selectedOption: idx, timeTaken }])
-    playSound(idx === q.correctOption ? 'correct' : 'wrong')
-  }
-
-  const handleNext = () => {
-    if (currentIdx + 1 >= quiz.questions.length) {
-      handleSubmit()
-      return
+  // ============ Fullscreen ============
+  const toggleFs = useCallback(() => {
+    if (!document.fullscreenElement) {
+      document.documentElement.requestFullscreen?.().then(() => setIsFs(true)).catch(() => {})
+    } else {
+      document.exitFullscreen?.().then(() => setIsFs(false)).catch(() => {})
     }
-    setCurrentIdx(i => i + 1)
-    setSelected(null)
-    setRevealed(false)
-    setTimeLeft(quiz.questionTimer || 30)
-    setQStartTime(Date.now())
+  }, [])
+  useEffect(() => {
+    const onFs = () => setIsFs(!!document.fullscreenElement)
+    document.addEventListener('fullscreenchange', onFs)
+    return () => document.removeEventListener('fullscreenchange', onFs)
+  }, [])
+
+  // ============ Mark visited on idx change ============
+  useEffect(() => {
+    if (!quiz) return
+    const q = quiz.questions[currentIdx]
+    if (q) setVisited(v => ({ ...v, [q._id]: true }))
+  }, [currentIdx, quiz])
+
+  // ============ Handlers ============
+  const select = (optIdx) => {
+    const q = quiz.questions[currentIdx]
+    setAnswers(a => ({ ...a, [q._id]: optIdx }))
+    playSound('tick')
+  }
+  const clearAnswer = () => {
+    const q = quiz.questions[currentIdx]
+    setAnswers(a => { const n = { ...a }; delete n[q._id]; return n })
+  }
+  const toggleMark = () => {
+    const q = quiz.questions[currentIdx]
+    setMarks(m => ({ ...m, [q._id]: !m[q._id] }))
+  }
+  const toggleBookmark = () => {
+    const q = quiz.questions[currentIdx]
+    setBookmarks(b => ({ ...b, [q._id]: !b[q._id] }))
+    api.post(`/quizzes/bookmark/${q._id}`).catch(() => {})
+  }
+  const goTo = (i) => {
+    if (i < 0 || i >= quiz.questions.length) return
+    setCurrentIdx(i); setPaletteOpen(false)
   }
 
   const handleSubmit = async (auto = false) => {
-    clearInterval(timerRef.current)
+    if (!quiz) return
     clearInterval(totalTimerRef.current)
     setSubmitting(true)
     try {
+      const arr = quiz.questions.map(q => ({
+        questionId: q._id,
+        selectedOption: answers[q._id] != null ? answers[q._id] : -1,
+        timeTaken: 0,
+      }))
       const totalTaken = (quiz.duration || 1800) - totalTimeLeft
-      const res = await api.post(`/quizzes/${id}/submit`, {
-        answers,
-        timeTaken: totalTaken
-      })
-      navigate(`/quiz/${id}/result/${res.data.data.attemptId}`, {
-        state: { result: res.data.data }
-      })
-    } catch (err) {
+      const res = await api.post(`/quizzes/${id}/submit`, { answers: arr, timeTaken: totalTaken })
+      localStorage.removeItem(`quiz_attempt_${id}`)
+      playSound('submit')
+      navigate(`/quiz/${id}/result/${res.data.data.attemptId}`, { state: { result: res.data.data } })
+    } catch {
       toast.error('Submit failed. Try again.')
       setSubmitting(false)
     }
   }
 
+  // ============ Rendering helpers ============
   if (loading) return (
-    <div className="min-h-screen bg-gray-950 flex items-center justify-center">
-      <div className="w-10 h-10 border-2 border-brand-500 border-t-transparent rounded-full animate-spin" />
+    <div className="min-h-screen grid place-items-center">
+      <div className="w-10 h-10 border-2 border-gold-500 border-t-transparent rounded-full animate-spin" />
     </div>
   )
 
+  const total = quiz.questions.length
   const q = quiz.questions[currentIdx]
-  const progress = ((currentIdx) / quiz.questions.length) * 100
-  const timerPct = quiz.questionTimer > 0 ? (timeLeft / quiz.questionTimer) * 100 : 100
   const totalMins = Math.floor(totalTimeLeft / 60)
   const totalSecs = totalTimeLeft % 60
-  const isUrgent = timeLeft <= 8
+  const urgent = totalTimeLeft < 60
+  const answered = Object.keys(answers).length
+  const reviewed = Object.values(marks).filter(Boolean).length
+  const visitedCount = Object.keys(visited).length
+  const unseen = total - visitedCount
+
+  const statusFor = (qid) => {
+    const ans = answers[qid] != null
+    const mark = marks[qid]
+    if (mark && ans) return 'review-answered'
+    if (mark) return 'review'
+    if (ans) return 'answered'
+    if (visited[qid]) return 'visited'
+    return 'unseen'
+  }
+
+  const text = (lang === 'hi' && q.textHi) ? q.textHi : q.text
+  const opts = q.options.map(o => (lang === 'hi' && o.textHi) ? o.textHi : o.text)
 
   return (
-    <div className="min-h-screen bg-gray-950 flex flex-col">
-      {/* Top HUD */}
-      <header className="sticky top-0 z-20 bg-gray-950/95 backdrop-blur border-b border-white/[0.06]">
-        <div className="max-w-3xl mx-auto px-4 h-14 flex items-center gap-4">
-          <button onClick={() => { if (confirm('Quiz exit karo?')) navigate(-1) }}
-            className="text-gray-400 hover:text-white">
-            <X size={20} />
+    <div className="min-h-screen flex flex-col" style={{ background: 'rgb(var(--bg))' }}>
+      {/* ============ Top HUD ============ */}
+      <header className="sticky top-0 z-30 glass border-b border-[rgb(var(--border))]">
+        <div className="max-w-5xl mx-auto px-3 sm:px-5 h-14 flex items-center gap-2 sm:gap-4">
+          <button onClick={() => setConfirmExit(true)}
+            className="text-[rgb(var(--text-muted))] hover:text-[rgb(var(--text))] flex-shrink-0" aria-label="Exit">
+            <X size={20}/>
           </button>
 
-          {/* Progress bar */}
-          <div className="flex-1 h-1.5 bg-gray-800 rounded-full overflow-hidden">
-            <div className="h-full bg-brand-500 rounded-full transition-all duration-500"
-              style={{ width: progress + '%' }} />
+          <div className="flex-1 min-w-0">
+            <div className="text-xs font-semibold truncate">{quiz.title}</div>
+            <div className="h-1 bg-[rgb(var(--border))] rounded-full overflow-hidden mt-1">
+              <div className="h-full bg-gradient-to-r from-gold-400 to-gold-600 rounded-full transition-all"
+                style={{ width: ((currentIdx + 1) / total) * 100 + '%' }}/>
+            </div>
           </div>
 
-          <div className="text-sm font-mono text-gray-400 flex-shrink-0">
-            {currentIdx + 1}/{quiz.questions.length}
+          <button onClick={() => setLang(l => l === 'en' ? 'hi' : 'en')}
+            className="hidden sm:flex items-center gap-1 px-2.5 py-1 rounded-md surface-2 text-xs font-bold uppercase">
+            <Languages size={12}/>{lang === 'en' ? 'हिं' : 'EN'}
+          </button>
+
+          <div className={`flex items-center gap-1.5 font-mono font-bold text-sm px-2.5 py-1 rounded-md flex-shrink-0
+            ${urgent ? 'bg-rose-500/12 text-rose-600 dark:text-rose-300 animate-pulse' : 'surface-2'}`}>
+            <Clock size={13}/> {String(totalMins).padStart(2,'0')}:{String(totalSecs).padStart(2,'0')}
           </div>
 
-          {/* Total timer */}
-          <div className="flex items-center gap-1.5 text-sm font-mono flex-shrink-0 text-gray-300">
-            <Clock size={14} className="text-brand-400" />
-            {String(totalMins).padStart(2,'0')}:{String(totalSecs).padStart(2,'0')}
-          </div>
+          <button onClick={toggleFs} className="hidden sm:block text-[rgb(var(--text-muted))] hover:text-[rgb(var(--text))]" aria-label="Fullscreen">
+            {isFs ? <Minimize2 size={16}/> : <Maximize2 size={16}/>}
+          </button>
+
+          <button onClick={() => setPaletteOpen(true)}
+            className="lg:hidden flex items-center gap-1 px-2.5 py-1 rounded-md surface-2 text-xs font-bold">
+            <Grid3x3 size={13}/>{currentIdx + 1}/{total}
+          </button>
         </div>
       </header>
 
-      {/* Question card */}
-      <main className="flex-1 flex flex-col max-w-3xl mx-auto w-full px-4 py-6">
-        {/* Per-question timer ring */}
-        {quiz.questionTimer > 0 && (
-          <div className="flex items-center gap-3 mb-6">
-            <div className="relative w-12 h-12 flex-shrink-0">
-              <svg className="w-full h-full -rotate-90" viewBox="0 0 48 48">
-                <circle cx="24" cy="24" r="20" fill="none" stroke="#1f2937" strokeWidth="3" />
-                <circle cx="24" cy="24" r="20" fill="none"
-                  stroke={isUrgent ? '#ef4444' : '#ff4d00'} strokeWidth="3"
-                  strokeLinecap="round"
-                  strokeDasharray={`${2 * Math.PI * 20}`}
-                  strokeDashoffset={`${2 * Math.PI * 20 * (1 - timerPct / 100)}`}
-                  style={{ transition: 'stroke-dashoffset 0.9s linear, stroke 0.3s' }} />
-              </svg>
-              <div className={`absolute inset-0 flex items-center justify-center text-xs font-bold font-mono ${isUrgent ? 'text-red-400' : 'text-gray-200'}`}>
-                {timeLeft}
+      {/* ============ Body ============ */}
+      <div className="flex-1 max-w-7xl w-full mx-auto grid lg:grid-cols-[1fr_18rem] gap-6 px-4 lg:px-6 py-5 pb-32">
+        {/* Question pane */}
+        <main>
+          {/* Question card */}
+          <div className="card p-5 lg:p-6 animate-slide-up">
+            <div className="flex items-center justify-between mb-3 gap-3">
+              <div className="flex items-center gap-2 text-xs">
+                <span className="badge-gold">Q{currentIdx + 1} / {total}</span>
+                {q.category && <span className="badge-navy">{q.category}</span>}
+                {q.marks && <span className="badge-blue">+{q.marks} marks</span>}
+                {q.negativeMarks > 0 && <span className="badge-red">-{q.negativeMarks}</span>}
+              </div>
+              <button onClick={toggleBookmark}
+                className="text-[rgb(var(--text-muted))] hover:text-gold-500" aria-label="Bookmark">
+                {bookmarks[q._id] ? <BookmarkCheck size={18} className="text-gold-500"/> : <Bookmark size={18}/>}
+              </button>
+            </div>
+            <p className="text-base lg:text-lg font-semibold leading-relaxed font-devanagari mb-4">
+              {text}
+            </p>
+            {q.image && <img src={q.image} alt="question" className="rounded-xl max-h-72 object-contain mb-4"/>}
+
+            {/* Options */}
+            <div className="space-y-2.5">
+              {opts.map((opt, i) => {
+                const isSel = answers[q._id] === i
+                return (
+                  <button key={i} onClick={() => select(i)}
+                    className={`w-full flex items-center gap-3 p-4 rounded-xl border text-left transition-all
+                      ${isSel
+                        ? 'border-gold-500 bg-gold-500/10 ring-gold'
+                        : 'border-[rgb(var(--border))] hover:border-gold-500/40 hover:bg-gold-500/5'}`}>
+                    <span className={`w-9 h-9 rounded-lg flex-shrink-0 grid place-items-center text-sm font-bold
+                      ${isSel ? 'bg-gold-500 text-white' : 'surface-2 text-[rgb(var(--text-muted))]'}`}>
+                      {LETTERS[i]}
+                    </span>
+                    <span className="font-devanagari text-sm lg:text-base leading-snug">{opt}</span>
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+
+          {/* Action bar */}
+          <div className="mt-4 flex flex-wrap items-center gap-2">
+            <button onClick={clearAnswer} className="btn-ghost !py-2 text-xs"
+                    disabled={answers[q._id] == null}>
+              Clear answer
+            </button>
+            <button onClick={toggleMark}
+              className={`btn !py-2 text-xs border ${marks[q._id]
+                ? 'bg-purple-500 text-white border-purple-500'
+                : 'border-[rgb(var(--border-strong))] text-[rgb(var(--text))] hover:border-purple-400'}`}>
+              {marks[q._id] ? 'Unmark for review' : 'Mark for review'}
+            </button>
+
+            <div className="flex-1"/>
+
+            <button onClick={() => goTo(currentIdx - 1)} disabled={currentIdx === 0}
+                    className="btn-ghost !py-2 text-xs"><ChevronLeft size={14}/> Previous</button>
+            {currentIdx + 1 < total ? (
+              <button onClick={() => goTo(currentIdx + 1)} className="btn-primary !py-2 text-xs">
+                Save & Next <ChevronRight size={14}/>
+              </button>
+            ) : (
+              <button onClick={() => setConfirmSubmit(true)} className="btn-primary !py-2 text-xs">
+                Submit Test <Send size={14}/>
+              </button>
+            )}
+          </div>
+        </main>
+
+        {/* ============ Palette (desktop) ============ */}
+        <aside className="hidden lg:block">
+          <Palette
+            quiz={quiz} currentIdx={currentIdx} statusFor={statusFor} goTo={goTo}
+            answered={answered} reviewed={reviewed} visitedCount={visitedCount} unseen={unseen}
+            onSubmit={() => setConfirmSubmit(true)}
+          />
+        </aside>
+      </div>
+
+      {/* ============ Mobile palette drawer ============ */}
+      {paletteOpen && (
+        <div className="fixed inset-0 z-40 lg:hidden">
+          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm animate-fade-in"
+               onClick={() => setPaletteOpen(false)}/>
+          <div className="absolute right-0 top-0 bottom-0 w-[88%] max-w-sm overflow-y-auto bg-[rgb(var(--surface))] p-5 animate-slide-up">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="font-bold flex items-center gap-2"><Grid3x3 size={16}/>Question Palette</h3>
+              <button onClick={() => setPaletteOpen(false)} className="text-[rgb(var(--text-muted))]">
+                <X size={18}/>
+              </button>
+            </div>
+            <Palette
+              quiz={quiz} currentIdx={currentIdx} statusFor={statusFor} goTo={goTo}
+              answered={answered} reviewed={reviewed} visitedCount={visitedCount} unseen={unseen}
+              onSubmit={() => { setPaletteOpen(false); setConfirmSubmit(true) }}
+            />
+          </div>
+        </div>
+      )}
+
+      {/* ============ Confirm submit modal ============ */}
+      {confirmSubmit && (
+        <Modal onClose={() => setConfirmSubmit(false)}>
+          <div className="text-center">
+            <div className="w-12 h-12 rounded-full bg-gold-500/15 grid place-items-center mx-auto mb-3">
+              <Send size={20} className="text-gold-500"/>
+            </div>
+            <h3 className="font-display font-extrabold text-2xl mb-1">Submit your test?</h3>
+            <p className="text-[rgb(var(--text-muted))] text-sm mb-5">
+              Once submitted you can't change your answers.
+            </p>
+            <div className="grid grid-cols-2 gap-3 mb-5 text-sm">
+              <div className="surface-2 rounded-lg p-3">
+                <div className="text-2xl font-bold text-emerald-500">{answered}</div>
+                <div className="text-xs text-[rgb(var(--text-muted))]">Answered</div>
+              </div>
+              <div className="surface-2 rounded-lg p-3">
+                <div className="text-2xl font-bold text-rose-500">{total - answered}</div>
+                <div className="text-xs text-[rgb(var(--text-muted))]">Unanswered</div>
+              </div>
+              <div className="surface-2 rounded-lg p-3">
+                <div className="text-2xl font-bold text-purple-500">{reviewed}</div>
+                <div className="text-xs text-[rgb(var(--text-muted))]">For review</div>
+              </div>
+              <div className="surface-2 rounded-lg p-3">
+                <div className="text-2xl font-bold">{unseen}</div>
+                <div className="text-xs text-[rgb(var(--text-muted))]">Unseen</div>
               </div>
             </div>
-            <div>
-              <div className="text-xs text-gray-500 uppercase tracking-wide font-mono">{q.quiz || quiz.category}</div>
-              <div className="text-xs text-gray-400">Time remaining this question</div>
+            <div className="flex gap-2">
+              <button onClick={() => setConfirmSubmit(false)} className="btn-ghost flex-1 justify-center">Continue Test</button>
+              <button onClick={() => handleSubmit()} disabled={submitting}
+                      className="btn-primary flex-1 justify-center">
+                {submitting ? 'Submitting…' : 'Submit Now'}
+              </button>
             </div>
           </div>
-        )}
+        </Modal>
+      )}
 
-        {/* Question */}
-        <div className="card p-6 mb-5 animate-slide-up">
-          <p className="text-xs font-mono text-brand-400 uppercase tracking-wider mb-3">
-            Q{currentIdx + 1} of {quiz.questions.length}
-          </p>
-          <p className="text-lg lg:text-xl font-semibold leading-relaxed font-devanagari">
-            {q.text}
-          </p>
-          {q.image && (
-            <img src={q.image} alt="question" className="mt-4 rounded-xl max-h-48 object-contain" />
-          )}
-        </div>
-
-        {/* Options */}
-        <div className="space-y-3">
-          {q.options.map((opt, i) => {
-            let cls = 'border-white/[0.08] hover:border-brand-500/50 hover:bg-brand-500/5'
-            if (revealed) {
-              if (i === q.correctOption) cls = 'border-emerald-500 bg-emerald-500/10'
-              else if (i === selected && i !== q.correctOption) cls = 'border-red-500 bg-red-500/8'
-              else cls = 'border-white/[0.04] opacity-50'
-            }
-
-            return (
-              <button key={i} onClick={() => handleSelect(i)} disabled={revealed}
-                className={`w-full flex items-center gap-4 p-4 rounded-2xl border transition-all duration-200 text-left group ${cls}`}>
-                <span className={`w-9 h-9 rounded-xl flex items-center justify-center text-sm font-bold flex-shrink-0 transition-all
-                  ${revealed && i === q.correctOption ? 'bg-emerald-500 text-white' :
-                    revealed && i === selected ? 'bg-red-500 text-white' :
-                    'bg-gray-800 text-gray-400 group-hover:bg-brand-500/20 group-hover:text-brand-400'}`}>
-                  {revealed && i === q.correctOption ? <CheckCircle2 size={16} /> :
-                   revealed && i === selected ? <XCircle size={16} /> :
-                   LETTERS[i]}
-                </span>
-                <span className="font-devanagari text-sm lg:text-base leading-snug">{opt.text}</span>
+      {/* ============ Confirm exit modal ============ */}
+      {confirmExit && (
+        <Modal onClose={() => setConfirmExit(false)}>
+          <div className="text-center">
+            <div className="w-12 h-12 rounded-full bg-rose-500/15 grid place-items-center mx-auto mb-3">
+              <AlertTriangle size={20} className="text-rose-500"/>
+            </div>
+            <h3 className="font-display font-extrabold text-2xl mb-1">Exit the test?</h3>
+            <p className="text-[rgb(var(--text-muted))] text-sm mb-5">
+              Your progress is auto-saved. You can resume from where you left off.
+            </p>
+            <div className="flex gap-2">
+              <button onClick={() => setConfirmExit(false)} className="btn-ghost flex-1 justify-center">Stay</button>
+              <button onClick={() => navigate(-1)} className="btn-primary flex-1 justify-center !bg-rose-500 hover:!bg-rose-600 !shadow-none">
+                Exit anyway
               </button>
-            )
-          })}
-        </div>
-
-        {/* Explanation */}
-        {revealed && q.explanation && (
-          <div className="mt-5 p-4 rounded-2xl bg-sky-500/8 border border-sky-500/20 animate-slide-up">
-            <p className="text-xs font-bold text-sky-400 uppercase tracking-wider mb-1.5">💡 Explanation</p>
-            <p className="text-sm text-gray-300 leading-relaxed font-devanagari">{q.explanation}</p>
+            </div>
           </div>
-        )}
+        </Modal>
+      )}
+    </div>
+  )
+}
 
-        {/* Skip/Auto-skip feedback */}
-        {revealed && selected === -1 && (
-          <div className="mt-3 p-3 rounded-xl bg-yellow-500/8 border border-yellow-500/20 text-sm text-yellow-400 flex items-center gap-2">
-            <SkipForward size={16} /> Time out — skipped!
-          </div>
-        )}
-
-        {/* Next button */}
-        <div className="mt-6 flex justify-end">
-          {revealed && (
-            <button onClick={handleNext} disabled={submitting}
-              className="btn-primary animate-bounce-sm">
-              {currentIdx + 1 >= quiz.questions.length
-                ? submitting ? 'Submitting...' : '📊 Submit Quiz'
-                : <>Next <ChevronRight size={16} /></>}
-            </button>
-          )}
+// ============ Sub-components ============
+function Palette({ quiz, currentIdx, statusFor, goTo, answered, reviewed, visitedCount, unseen, onSubmit }) {
+  const total = quiz.questions.length
+  return (
+    <div className="card p-4 lg:sticky lg:top-20 lg:max-h-[calc(100vh-6rem)] overflow-y-auto">
+      <div className="grid grid-cols-2 gap-2 mb-4 text-[11px]">
+        <div className="surface-2 rounded-md p-2 flex items-center justify-between">
+          <span className="text-[rgb(var(--text-muted))]">Answered</span>
+          <span className="font-bold text-emerald-500">{answered}</span>
         </div>
-      </main>
+        <div className="surface-2 rounded-md p-2 flex items-center justify-between">
+          <span className="text-[rgb(var(--text-muted))]">For review</span>
+          <span className="font-bold text-purple-500">{reviewed}</span>
+        </div>
+        <div className="surface-2 rounded-md p-2 flex items-center justify-between">
+          <span className="text-[rgb(var(--text-muted))]">Visited</span>
+          <span className="font-bold">{visitedCount}</span>
+        </div>
+        <div className="surface-2 rounded-md p-2 flex items-center justify-between">
+          <span className="text-[rgb(var(--text-muted))]">Unseen</span>
+          <span className="font-bold">{unseen}</span>
+        </div>
+      </div>
+
+      <div className="text-[11px] uppercase font-bold tracking-wider text-[rgb(var(--text-muted))] mb-2">Question Palette</div>
+      <div className="grid grid-cols-6 lg:grid-cols-5 gap-1.5 mb-4">
+        {quiz.questions.map((qq, i) => (
+          <button key={qq._id} onClick={() => goTo(i)} className={paletteClass(statusFor(qq._id), i === currentIdx)}>
+            {i + 1}
+          </button>
+        ))}
+      </div>
+
+      <div className="space-y-1.5 text-[11px]">
+        <Legend cls="bg-emerald-500" label="Answered"/>
+        <Legend cls="bg-rose-500/40" label="Visited, not answered"/>
+        <Legend cls="bg-purple-500" label="Marked for review"/>
+        <Legend cls="bg-purple-500 border-2 border-emerald-400" label="Marked + answered"/>
+        <Legend cls="bg-[rgb(var(--surface-2))] border border-[rgb(var(--border))]" label="Not visited"/>
+      </div>
+
+      <button onClick={onSubmit} className="btn-primary w-full justify-center mt-4 !py-2.5">
+        <Send size={14}/> Submit Test
+      </button>
+    </div>
+  )
+}
+
+function Legend({ cls, label }) {
+  return (
+    <div className="flex items-center gap-2">
+      <span className={`w-4 h-4 rounded ${cls}`}/>
+      <span className="text-[rgb(var(--text-muted))]">{label}</span>
+    </div>
+  )
+}
+
+function Modal({ children, onClose }) {
+  return (
+    <div className="fixed inset-0 z-50 grid place-items-center p-4">
+      <div className="absolute inset-0 bg-black/70 backdrop-blur-sm animate-fade-in" onClick={onClose}/>
+      <div className="relative card p-6 max-w-sm w-full animate-slide-up">{children}</div>
     </div>
   )
 }

@@ -3,27 +3,24 @@ import ReactDOM from 'react-dom/client'
 import { BrowserRouter } from 'react-router-dom'
 import { Toaster } from 'react-hot-toast'
 import App from './App'
+import { ThemeProvider } from './context/ThemeContext'
 import './index.css'
 
 ReactDOM.createRoot(document.getElementById('root')).render(
   <React.StrictMode>
-    <BrowserRouter>
-      <App />
-      <Toaster
-        position="top-right"
-        toastOptions={{
-          style: {
-            background: '#1a1a2e',
-            color: '#f0f0fa',
-            border: '1px solid rgba(255,255,255,0.08)',
-            borderRadius: '12px',
-            fontFamily: 'DM Sans, sans-serif',
-            fontSize: '14px'
-          },
-          success: { iconTheme: { primary: '#10b981', secondary: '#000' } },
-          error:   { iconTheme: { primary: '#ef4444', secondary: '#000' } }
-        }}
-      />
-    </BrowserRouter>
+    <ThemeProvider>
+      <BrowserRouter>
+        <App />
+        <Toaster
+          position="top-center"
+          toastOptions={{
+            className: '!bg-[rgb(var(--surface))] !text-[rgb(var(--text))] !border !border-[rgb(var(--border))] !rounded-xl !text-sm',
+            style: { fontFamily: 'Inter, sans-serif' },
+            success: { iconTheme: { primary: '#10b981', secondary: '#fff' } },
+            error:   { iconTheme: { primary: '#ef4444', secondary: '#fff' } }
+          }}
+        />
+      </BrowserRouter>
+    </ThemeProvider>
   </React.StrictMode>
 )
